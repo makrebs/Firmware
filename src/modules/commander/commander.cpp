@@ -202,6 +202,11 @@ static float avionics_power_rail_voltage;		// voltage of the avionics power rail
 
 static bool can_arm_without_gps = false;
 
+static bool _userProgramCmd = false;
+static rgbled_rgbset_t _userRgbColor = { 0 };
+static rgbled_color_t _userSetColor = RGBLED_COLOR_SIZE;
+static rgbled_mode_t _userSetMode = RGBLED_MODE_ON;
+
 
 /**
  * The daemon app only briefly exists to start
@@ -1083,6 +1088,7 @@ bool handle_command(struct vehicle_status_s *status_local, const struct safety_s
 	case vehicle_command_s::VEHICLE_CMD_DO_SET_CAM_TRIGG_DIST:
 	case vehicle_command_s::VEHICLE_CMD_DO_CHANGE_SPEED:
 	case vehicle_command_s::VEHICLE_CMD_START_RX_PAIR:
+	case vehicle_command_s::VEHICLE_CMD_SET_RGBLED:
 		/* ignore commands that handled in low prio loop */
 		break;
 
@@ -2923,7 +2929,16 @@ void
 control_status_leds(vehicle_status_s *status_local, const actuator_armed_s *actuator_armed, bool changed, battery_status_s *battery_local, const cpuload_s *cpuload_local)
 {
 	/* driving rgbled */
-	if (changed) {
+	if (_userProgramCmd) {
+			rgbled_set_mode(_userSetMode);
+			if (_userSetColor <= RGBLED_COLOR_SIZE) {
+			  int fd = px4_open(RGBLED0_DEVICE_PATH, 0);
+				px4_ioctl(fd, RGBLED_SET_RGB, (unsigned long)&_userRgbColor);
+				px4_close(fd);
+			} else {
+				rgbled_set_color(_userSetColor);
+			}
+	} else if (changed) {
 		bool set_normal_color = false;
 		bool hotplug_timeout = hrt_elapsed_time(&commander_boot_timestamp) > HOTPLUG_SENS_TIMEOUT;
 
@@ -3695,6 +3710,69 @@ void *commander_low_prio_loop(void *arg)
 
 			/* only handle low-priority commands here */
 			switch (cmd.command) {
+
+			case vehicle_command_s::VEHICLE_CMD_SET_RGBLED: {
+				int fd;
+
+				fd = px4_open(RGBLED0_DEVICE_PATH, 0);
+
+				if (fd == -1) {
+					warnx("Unable to open " RGBLED0_DEVICE_PATH);
+					answer_command(cmd, vehicle_command_s::VEHICLE_CMD_RESULT_FAILED, command_ack_pub, command_ack);
+				}
+
+				switch ((int)cmd.param1) {
+					case 0: {
+						_userRgbColor.red   = (int)(cmd.param2 * 255.0f);
+						_userRgbColor.green = (int)(cmd.param3 * 255.0f);
+						_userRgbColor.blue  = (int)(cmd.param4 * 255.0f);
+						_userSetColor = RGBLED_COLOR_SIZE;
+
+						px4_ioctl(fd, RGBLED_SET_RGB, (unsigned long)&_userRgbColor);
+						if (_userProgramCmd != true) {
+								px4_ioctl(fd, RGBLED_SET_MODE, (unsigned long)RGBLED_MODE_ON);
+						}
+
+						_userProgramCmd = true;
+						break;
+					}
+
+					case 1:
+						_userSetColor = (rgbled_color_t)cmd.param2;
+
+						px4_ioctl(fd, RGBLED_SET_COLOR, (unsigned long)cmd.param2);
+						if (_userProgramCmd != true) {
+								px4_ioctl(fd, RGBLED_SET_MODE, (unsigned long)RGBLED_MODE_ON);
+						}
+
+						_userProgramCmd = true;
+						break;
+
+					case 2:
+						_userSetMode = (rgbled_mode_t)cmd.param2;
+
+						px4_ioctl(fd, RGBLED_SET_MODE, (unsigned long)cmd.param2);
+						_userProgramCmd = true;
+						break;
+
+					case 3: {
+						rgbled_pattern_t pattern = { {RGBLED_COLOR_RED, RGBLED_COLOR_GREEN, RGBLED_COLOR_BLUE, RGBLED_COLOR_WHITE, RGBLED_COLOR_OFF, RGBLED_COLOR_OFF},
+							{500, 500, 500, 500, 1000, 0 }};
+						px4_ioctl(fd, RGBLED_SET_PATTERN, (unsigned long)&pattern);
+						px4_ioctl(fd, RGBLED_SET_MODE, (unsigned long)RGBLED_MODE_PATTERN);
+						_userProgramCmd = true;
+						break;
+					}
+
+					default:
+						_userProgramCmd = false;
+				}
+				px4_close(fd);
+
+				// NOTE this will override the rgbled! Does nothing for mavlink.
+				// answer_command(cmd, vehicle_command_s::VEHICLE_CMD_RESULT_ACCEPTED);
+				break;
+			}
 
 			case vehicle_command_s::VEHICLE_CMD_PREFLIGHT_REBOOT_SHUTDOWN:
 				if (is_safe(&status, &safety, &armed)) {
