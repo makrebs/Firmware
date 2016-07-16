@@ -56,6 +56,7 @@
 #include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/vehicle_attitude_setpoint.h>
+#include <uORB/topics/vehicle_control_mode.h>
 #include <uORB/topics/manual_control_setpoint.h>
 #include <uORB/topics/actuator_controls.h>
 #include <uORB/topics/vehicle_global_position.h>
@@ -241,6 +242,8 @@ int rover_steering_control_thread_main(int argc, char *argv[])
 	memset(&vstatus, 0, sizeof(vstatus));
 	struct position_setpoint_s global_sp;
 	memset(&global_sp, 0, sizeof(global_sp));
+    struct vehicle_control_mode_s _control_mode;
+    memset(&_control_mode, 0, sizeof(_control_mode));
 
 	/* output structs - this is what is sent to the mixer */
 	struct actuator_controls_s actuators;
@@ -272,6 +275,8 @@ int rover_steering_control_thread_main(int argc, char *argv[])
 	int att_sp_sub = orb_subscribe(ORB_ID(vehicle_attitude_setpoint));
 
 	int param_sub = orb_subscribe(ORB_ID(parameter_update));
+
+    int control_sub = orb_subscribe(ORB_ID(vehicle_control_mode));
 
 	/* Setup of loop */
 
@@ -339,19 +344,25 @@ int rover_steering_control_thread_main(int argc, char *argv[])
 					orb_copy(ORB_ID(vehicle_attitude_setpoint), att_sp_sub, &_att_sp);
 				}
 
-				/* control attitude / heading */
-				control_attitude(&_att_sp, &att, &actuators);
-
 				if (manual_sp_updated)
 					/* get the RC (or otherwise user based) input */
 				{
 					orb_copy(ORB_ID(manual_control_setpoint), manual_sp_sub, &manual_sp);
 				}
 
-				// XXX copy from manual depending on flight / usage mode to override
 
 				/* get the system status and the flight mode we're in */
 				orb_copy(ORB_ID(vehicle_status), vstatus_sub, &vstatus);
+                orb_copy(ORB_ID(vehicle_control_mode), control_sub, &_control_mode);
+
+                // mix in manual control if enabled
+                if (_control_mode.flag_control_manual_enabled) {
+                    _att_sp.yaw_body = manual_sp.r;
+                    _att_sp.thrust = manual_sp.x;
+                }
+
+                /* control attitude / heading */
+                control_attitude(&_att_sp, &att, &actuators);
 
 				/* sanity check and publish actuator outputs */
 				if (isfinite(actuators.control[0]) &&
